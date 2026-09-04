@@ -1111,6 +1111,15 @@ function stripTurnRuntimeState(
   return { userText: turn.userText, images: turn.images, steps: turn.steps };
 }
 
+/** Hidden pi-subagents roster injected as a user-role custom message. */
+function isSubagentRosterInjection(text: string): boolean {
+  return text.includes("<subagent-roster>") || text.includes("subagent_roster");
+}
+
+function shouldMergeConsecutiveUserChunks(previousText: string, currentText: string): boolean {
+  return isSubagentRosterInjection(previousText) || isSubagentRosterInjection(currentText);
+}
+
 export function parseMessages(messages: OpenAIMessage[]): ParsedMessages {
   let systemPrompt = "You are a helpful assistant.";
   const turns: ParsedTurn[] = [];
@@ -1210,20 +1219,19 @@ export function parseMessages(messages: OpenAIMessage[]): ParsedMessages {
     if (currentTurn.steps.length === 0 || isToolContinuation) {
       userText = currentTurn.userText;
       userImages = currentTurn.images;
-      // Pi may emit multiple consecutive user-role messages before the first
+      // Pi may emit multiple consecutive user-role messages before the next
       // assistant reply (for example the real prompt plus a hidden
-      // subagent_roster custom message). Merge those chunks; once a turn has
-      // completed with assistant/tool steps, later consecutive user messages
-      // are separate (for example interrupt + continue).
-      const hasCompletedTurn = turns.some((turn) => turn.steps.length > 0);
-      if (!hasCompletedTurn) {
-        while (turns.length > 0 && turns[turns.length - 1]!.steps.length === 0) {
-          const previous = turns.pop()!;
-          userText = userText
-            ? `${previous.userText}\n\n${userText}`
-            : previous.userText;
-          userImages = [...previous.images, ...userImages];
-        }
+      // subagent_roster custom message). Merge only when one chunk is that
+      // ambient injection so interrupt + continue still sends the latest
+      // user message alone.
+      while (turns.length > 0 && turns[turns.length - 1]!.steps.length === 0) {
+        const previous = turns[turns.length - 1]!;
+        if (!shouldMergeConsecutiveUserChunks(previous.userText, userText)) break;
+        const merged = turns.pop()!;
+        userText = userText
+          ? `${merged.userText}\n\n${userText}`
+          : merged.userText;
+        userImages = [...merged.images, ...userImages];
       }
       if (hasAnyToolResults) {
         toolResults = toolCallSteps
